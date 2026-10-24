@@ -23,27 +23,81 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: cursor/pinocchio-cel-fdad
+          fetch-depth: 1
+
       - name: Decode base64 JPEGs into story-art
         run: |
           set -euo pipefail
-          shopt -s nullglob
+          shopt -s nullglob dotglob
           files=(story-art/_b64/*.b64)
           if [ ${#files[@]} -eq 0 ]; then
             echo "no base64 payloads"
             exit 0
           fi
+          mkdir -p story-art
+          decoded=0
+          for f in "${files[@]}"; do
+            name=$(basename "$f" .b64)
+            case "$name" in
+              .*) echo "skip $name"; continue ;;
+            esac
+            base64 -d "$f" > "story-art/$name"
+            python3 -c 'import pathlib,sys; name=sys.argv[1]; data=pathlib.Path("story-art", name).read_bytes(); assert data.startswith(b"\xff\xd8\xff"), name; print(name, len(data))' "$name"
+            decoded=$((decoded + 1))
+          done
+          echo "decoded $decoded"
+
+      - name: Verify SHA1 when FINAL is present
+        run: |
+          set -euo pipefail
+          if [ ! -f story-art/_b64/FINAL ]; then
+            echo "not final; skip sha1 gate"
+            exit 0
+          fi
+          python3 -c '
+import hashlib, pathlib, sys
+root = pathlib.Path("story-art")
+sha_file = root / "_b64" / "SHA1"
+if not sha_file.exists():
+    print("SHA1 manifest missing")
+    sys.exit(1)
+expected = {}
+for line in sha_file.read_text().splitlines():
+    parts = line.split()
+    if len(parts) >= 2 and parts[1].endswith(".jpg"):
+        size = int(parts[2]) if len(parts) > 2 else None
+        expected[parts[1]] = (parts[0], size)
+if len(expected) != 41:
+    print("expected 41 entries, got", len(expected))
+    sys.exit(1)
+missing = []
+for name, (digest, size) in sorted(expected.items()):
+    p = root / name
+    if not p.exists():
+        missing.append(name)
+        continue
+    data = p.read_bytes()
+    got = hashlib.sha1(data).hexdigest()
+    if got != digest or (size is not None and len(data) != size):
+        print("MISMATCH", name, got, len(data), "expected", digest, size)
+        sys.exit(1)
+if missing:
+    print("MISSING", " ".join(missing))
+    sys.exit(1)
+print("sha1 ok", len(expected))
+'
+
+      - name: Commit JPEGs and remove the payload
+        run: |
+          set -euo pipefail
+          shopt -s nullglob dotglob
           final=0
           if [ -f story-art/_b64/FINAL ]; then
             final=1
           fi
-          mkdir -p story-art
-          for f in "${files[@]}"; do
-            name=$(basename "$f" .b64)
-            base64 -d "$f" > "story-art/$name"
-            python3 -c 'import pathlib,sys; name=sys.argv[1]; data=pathlib.Path("story-art", name).read_bytes(); assert data.startswith(b"\xff\xd8\xff"), name; print(name, len(data))' "$name"
-          done
-          rm -f story-art/_b64/*.b64 story-art/_b64/READY story-art/_b64/FINAL story-art/_b64/SHA1
-          rm -f story-art/.tiny-test.jpg story-art/.tiny-b64.jpg story-art/.pinocchio-write-test
+          rm -f story-art/_b64/*.b64
+          rm -f story-art/_b64/READY story-art/_b64/FINAL story-art/_b64/SHA1
+          rm -f story-art/.tiny-test.jpg story-art/.tiny-b64.jpg story-art/.pinocchio-write-test story-art/.tiny-probe.jpg
           if [ "$final" = 1 ]; then
             rm -rf story-art/_b64
             rm -f .github/workflows/materialize-pinocchio-art.yml
