@@ -32,18 +32,8 @@ jobs:
           mkdir -p story-art
           while read -r name url sha size; do
             [ -z "${name:-}" ] && continue
-            curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 --max-time 120 -o "story-art/$name" "$url"
-            python3 -c '
-import hashlib, pathlib, sys
-name, sha, size = sys.argv[1:]
-data = pathlib.Path("story-art", name).read_bytes()
-if not data.startswith(b"\xff\xd8\xff"):
-    raise SystemExit("not a jpeg " + name)
-got = hashlib.sha1(data).hexdigest()
-if got != sha or len(data) != int(size):
-    raise SystemExit("mismatch %s %s %s %s %s" % (name, got, len(data), sha, size))
-print(name, len(data), got)
-' "$name" "$sha" "$size"
+            curl -fsSL --retry 5 --retry-delay 2 --max-time 120 -o "story-art/$name" "$url"
+            python3 -c 'import hashlib,pathlib,sys; name,sha,size=sys.argv[1:]; data=pathlib.Path("story-art",name).read_bytes(); assert data.startswith(bytes([255,216,255])), name; got=hashlib.sha1(data).hexdigest(); assert got==sha and len(data)==int(size), (name,got,len(data),sha,size); print(name,len(data),got)' "$name" "$sha" "$size"
           done < story-art/_b64/URLS
           count=$(find story-art -maxdepth 1 -name 'pinocchio-*.jpg' | wc -l)
           test "$count" -eq 41
